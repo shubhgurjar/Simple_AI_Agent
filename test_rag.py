@@ -2,9 +2,11 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from rag import SimpleRAGPipeline
+from tools import AgentTools
 
 
 class RAGPipelineTests(unittest.TestCase):
@@ -226,6 +228,60 @@ class RAGPipelineTests(unittest.TestCase):
 
         pipeline._get_embedding.assert_called_once_with("query")
         self.assertEqual(results[0]["similarity_score"], 1.0)
+
+
+class KnowledgeBaseToolTests(unittest.TestCase):
+    def test_tool_schema_and_dispatch_search_the_rag_pipeline(self):
+        agent_tools = AgentTools()
+        results = [
+            {
+                "filename": "leave_policy.txt",
+                "chunk_id": 2,
+                "chunk_text": "Employees receive paid leave.",
+                "similarity_score": 0.875,
+            }
+        ]
+        tool_call = SimpleNamespace(
+            id="call-rag",
+            function=SimpleNamespace(
+                name="search_knowledge_base",
+                arguments='{"user_query": "How much leave?"}',
+            ),
+        )
+
+        with patch("tools.SimpleRAGPipeline") as rag_pipeline_class:
+            rag_pipeline = rag_pipeline_class.return_value
+            rag_pipeline.search_knowledge_base.return_value = results
+            result = agent_tools.execute_tool_call(tool_call)
+
+        schema = next(
+            tool["function"]
+            for tool in agent_tools.schemas
+            if tool["function"]["name"] == "search_knowledge_base"
+        )
+        self.assertIn("Zorvex Company Private Limited", schema["description"])
+        self.assertIn("three", schema["description"])
+        self.assertIn("internal reference material", schema["description"])
+        self.assertIn("every new", schema["description"])
+        self.assertEqual(schema["parameters"]["required"], ["user_query"])
+        self.assertIn(
+            "does not need to be included",
+            schema["parameters"]["properties"]["user_query"]["description"],
+        )
+        self.assertIn(
+            "relevant conversation context",
+            schema["parameters"]["properties"]["user_query"]["description"],
+        )
+        rag_pipeline_class.assert_called_once_with()
+        rag_pipeline.search_knowledge_base.assert_called_once_with(
+            "How much leave?",
+            k=3,
+        )
+        self.assertEqual(result["role"], "tool")
+        self.assertEqual(result["tool_call_id"], "call-rag")
+        self.assertIn("leave_policy.txt", result["content"])
+        self.assertIn("#2", result["content"])
+        self.assertIn("Employees receive paid leave.", result["content"])
 
 
 if __name__ == "__main__":

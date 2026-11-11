@@ -186,6 +186,13 @@ class SimpleRAGPipeline:
             k=k,
         )
 
+    def search_knowledge_base(self, user_query, k=3):
+        """Load cached knowledge-base chunks and search them for a query."""
+        directory = os.path.join(os.path.dirname(__file__), "knowledge_base")
+        vector_file = os.path.join(directory, "vectors.json")
+        chunks = self._load_or_create_chunks(directory, vector_file)
+        return self.search(user_query, chunks, k=k)
+
     def _print_results(self, chunks):
         """Print ranked source names, chunk IDs, scores, and text."""
         for rank, chunk in enumerate(chunks, start=1):
@@ -200,20 +207,11 @@ class SimpleRAGPipeline:
         """Load and chunk documents, then print the three best matches."""
         try:
             user_query = input("Enter a query to compare with the knowledge base: ")
-
-            dir_path = os.path.join(os.path.dirname(__file__), "knowledge_base")
-            vector_file = os.path.join(dir_path, "vectors.json")
-            chunks = self._load_or_create_chunks(dir_path, vector_file)
-            print(f"Loaded {len(chunks)} sections from the knowledge base.")
-            if not chunks:
-                self.logger.warning("No text chunks found in %s", dir_path)
+            top_chunks = self.search_knowledge_base(user_query, k=3)
+            if not top_chunks:
+                self.logger.warning("No text chunks found in the knowledge base.")
                 return []
 
-            top_chunks = self.search(
-                user_query,
-                chunks,
-                k=3,
-            )
             self._print_results(top_chunks)
             return top_chunks
 

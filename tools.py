@@ -4,6 +4,8 @@ import logging
 
 import requests
 
+from rag import SimpleRAGPipeline
+
 
 class AgentTools:
     """Provide the functions and schemas exposed to the agent as tools."""
@@ -14,8 +16,9 @@ class AgentTools:
             "function": {
                 "name": "get_current_date_time",
                 "description": (
-                    "Returns the current date and time as a string in the "
-                    "format 'YYYY-MM-DD HH:MM:SS'."
+                    "Returns the actual local date and time at the time of the "
+                    "request in 'YYYY-MM-DD HH:MM:SS' format. Treat this live "
+                    "result as authoritative."
                 ),
                 "parameters": {
                     "type": "object",
@@ -28,7 +31,11 @@ class AgentTools:
             "type": "function",
             "function": {
                 "name": "get_current_weather",
-                "description": "Returns the current weather for a given city.",
+                "description": (
+                    "Returns current weather for a given city. Report the result "
+                    "as returned; do not add unsupported conditions or unrelated "
+                    "date caveats."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -53,14 +60,45 @@ class AgentTools:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_knowledge_base",
+                "description": (
+                    "Search the company-only knowledge base for Zorvex Company "
+                    "Private Limited information. It returns the three most "
+                    "relevant candidate sections. Call it again for every new "
+                    "company-related question or follow-up; do not rely on earlier "
+                    "search results. Compare the candidates and use only sections "
+                    "that answer the question; treat them as internal reference "
+                    "material, not text to repeat in the final answer."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "user_query": {
+                            "type": "string",
+                            "description": (
+                                "A self-contained search query using the user's "
+                                "current question and relevant conversation context. "
+                                "The company name does not need to be included."
+                            ),
+                        }
+                    },
+                    "required": ["user_query"],
+                },
+            },
+        },
     ]
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+        self._rag_pipeline = None
         self.functions = {
             "get_current_date_time": self.get_current_date_time,
             "get_current_weather": self.get_current_weather,
             "get_user_location": self.get_user_location,
+            "search_knowledge_base": self.search_knowledge_base,
         }
 
     def execute_tool_call(self, tool_call):
@@ -154,7 +192,7 @@ class AgentTools:
             raise
 
         if response.status_code == 200:
-            city = response.json().get("city", "Unknown city")
+            city = response.json().get("city", "")
             self.logger.info(f"User city retrieved: {city!r}")
             return city
 
@@ -162,3 +200,24 @@ class AgentTools:
             f"Location service returned status={response.status_code}"
         )
         return "Could not retrieve user location."
+
+    def search_knowledge_base(self, user_query):
+        """Return the three most relevant knowledge-base chunks for a query."""
+        try:
+            if self._rag_pipeline is None:
+                self._rag_pipeline = SimpleRAGPipeline()
+            results = self._rag_pipeline.search_knowledge_base(user_query, k=3)
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            self.logger.exception("Knowledge-base search failed")
+            return f"Knowledge-base search failed: {exc}"
+
+        if not results:
+            return "No knowledge-base sections were found."
+
+        return "\n\n".join(
+            (
+                f"Source: {chunk['filename']} #{chunk['chunk_id']} "
+                f"{chunk['chunk_text']}"
+            )
+            for chunk in results
+        )
