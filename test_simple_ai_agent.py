@@ -1,3 +1,5 @@
+from contextlib import redirect_stdout
+from io import StringIO
 import logging
 import unittest
 from types import SimpleNamespace
@@ -17,10 +19,18 @@ def make_tool_call(name, arguments="{}", call_id="call-1"):
     )
 
 
-def make_completion(message, finish_reason="stop"):
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=message, finish_reason=finish_reason)]
-    )
+def make_stream(*deltas):
+    return [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=delta,
+                    finish_reason=None,
+                )
+            ]
+        )
+        for delta in deltas
+    ]
 
 
 class AgentToolsTests(unittest.TestCase):
@@ -132,32 +142,67 @@ class AgentTests(unittest.TestCase):
             return SimpleAIAgent()
 
     def test_response_returns_message_when_no_tool_is_requested(self):
-        final_message = SimpleNamespace(content="Hello", tool_calls=None)
+        stream = make_stream(
+            SimpleNamespace(
+                content="",
+                reasoning="not displayed",
+                tool_calls=None,
+            ),
+            SimpleNamespace(content="Hello", reasoning=None, tool_calls=None),
+        )
         client = SimpleNamespace(
             chat=SimpleNamespace(
                 completions=SimpleNamespace(
-                    create=Mock(return_value=make_completion(final_message))
+                    create=Mock(return_value=stream)
                 )
             )
         )
         agent = self.make_agent(client)
+        output = StringIO()
 
-        result = agent._get_agent_response()
+        with redirect_stdout(output):
+            result = agent._get_agent_response()
 
-        self.assertIs(result, final_message)
-        self.assertEqual(agent.messages[-1], final_message)
+        self.assertEqual(result, {"role": "assistant", "content": "Hello"})
+        self.assertIs(agent.messages[-1], result)
+        self.assertEqual(output.getvalue(), "🤖 Agent: Hello\nTool calls: []\n")
 
     def test_response_executes_tool_then_requests_final_message(self):
-        tool_call = make_tool_call("get_current_date_time")
-        tool_message = SimpleNamespace(content=None, tool_calls=[tool_call])
-        final_message = SimpleNamespace(content="It is now.", tool_calls=None)
+        first_tool_chunk = SimpleNamespace(
+            index=0,
+            id="call-1",
+            function=SimpleNamespace(
+                name="get_current_date_time",
+                arguments="{",
+            ),
+        )
+        second_tool_chunk = SimpleNamespace(
+            index=0,
+            id=None,
+            function=SimpleNamespace(
+                name=None,
+                arguments="}",
+            ),
+        )
+        final_stream = make_stream(
+            SimpleNamespace(content="It is now.", tool_calls=None)
+        )
         client = SimpleNamespace(
             chat=SimpleNamespace(
                 completions=SimpleNamespace(
                     create=Mock(
                         side_effect=[
-                            make_completion(tool_message, "tool_calls"),
-                            make_completion(final_message),
+                            make_stream(
+                                SimpleNamespace(
+                                    content=None,
+                                    tool_calls=[first_tool_chunk],
+                                ),
+                                SimpleNamespace(
+                                    content=None,
+                                    tool_calls=[second_tool_chunk],
+                                ),
+                            ),
+                            final_stream,
                         ]
                     )
                 )
@@ -165,31 +210,57 @@ class AgentTests(unittest.TestCase):
         )
         agent = self.make_agent(client)
 
-        result = agent._get_agent_response()
+        with patch("builtins.print"):
+            result = agent._get_agent_response()
 
-        self.assertIs(result, final_message)
+        self.assertEqual(result, {"role": "assistant", "content": "It is now."})
         self.assertEqual(client.chat.completions.create.call_count, 2)
+        self.assertEqual(
+            agent.messages[-3]["tool_calls"],
+            [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "get_current_date_time",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        )
         self.assertEqual(agent.messages[-2]["role"], "tool")
         self.assertEqual(agent.messages[-2]["tool_call_id"], "call-1")
 
     def test_response_raises_after_maximum_tool_turns(self):
-        tool_message = SimpleNamespace(
-            content=None,
-            tool_calls=[make_tool_call("get_current_date_time")],
+        tool_call = SimpleNamespace(
+            index=0,
+            id="call-1",
+            function=SimpleNamespace(
+                name="get_current_date_time",
+                arguments="{}",
+            ),
         )
         client = SimpleNamespace(
             chat=SimpleNamespace(
                 completions=SimpleNamespace(
                     create=Mock(
-                        return_value=make_completion(tool_message, "tool_calls")
+                        return_value=make_stream(
+                            SimpleNamespace(
+                                content=None,
+                                tool_calls=[tool_call],
+                            )
+                        )
                     )
                 )
             )
         )
         agent = self.make_agent(client)
 
-        with self.assertRaisesRegex(RuntimeError, str(MAX_STEPS)):
+        with patch("builtins.print"), self.assertRaisesRegex(
+            RuntimeError, str(MAX_STEPS)
+        ):
             agent._get_agent_response()
+        self.assertEqual(client.chat.completions.create.call_count, MAX_STEPS)
 
     def test_run_stops_on_exit_command(self):
         agent = self.make_agent(Mock())
@@ -197,6 +268,28 @@ class AgentTests(unittest.TestCase):
             agent.run()
 
         self.assertEqual(len(agent.messages), 1)
+
+    def test_run_prints_streamed_response_only_once(self):
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=Mock(
+                        return_value=make_stream(
+                            SimpleNamespace(content="Hello", tool_calls=None)
+                        )
+                    )
+                )
+            )
+        )
+        agent = self.make_agent(client)
+        output = StringIO()
+
+        with redirect_stdout(output), patch(
+            "builtins.input", side_effect=["Hi", "exit"]
+        ):
+            agent.run()
+
+        self.assertEqual(output.getvalue(), "🤖 Agent: Hello\nTool calls: []\n")
 
 
 class LoggingTests(unittest.TestCase):

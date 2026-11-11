@@ -22,13 +22,11 @@ A command-line AI agent powered by an OpenAI-compatible chat completions API. It
    ```powershell
    .venv\Scripts\Activate.ps1
    ```
-
 2. Install the dependencies from the requirements file:
 
    ```bash
    python -m pip install -r requirements.txt
    ```
-
 3. Create a `.env` file in the project directory with your API settings:
 
    ```dotenv
