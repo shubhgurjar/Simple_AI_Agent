@@ -4,9 +4,9 @@ import sys
 from types import SimpleNamespace
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 
-from Utils import configure_logging
+from utils import configure_logging
 from tools import AgentTools
 
 MAX_STEPS = 5
@@ -36,17 +36,28 @@ class SimpleAIAgent:
 
     def run(self):
         """Read user turns and handle them until the user exits."""
-        while True:
-            prompt = "🧑 You: "
-            if sys.stdout.isatty():
-                prompt = f"\033[97m{prompt}\033[0m"
-            user_input = input(prompt)
-            if user_input.lower() in {"exit", "quit", "bye"}:
-                break
+        try:
+            while True:
+                prompt = "🧑 You: "
+                if sys.stdout.isatty():
+                    prompt = f"\033[97m{prompt}\033[0m"
+                user_input = input(prompt)
+                if user_input.lower() in {"exit", "quit", "bye"}:
+                    break
 
-            self.logger.info(f"🧑 User asked: {user_input}")
-            self.messages.append({"role": "user", "content": user_input})
-            final_message = self._get_agent_response()
+                self.logger.info(f"🧑 User asked: {user_input}")
+                self.messages.append({"role": "user", "content": user_input})
+                try:
+                    self._get_agent_response()
+                except OpenAIError as exc:
+                    self.logger.exception("Model request failed")
+                    print(f"\n🤖 Agent: Model request failed: {exc}")
+                except RuntimeError as exc:
+                    self.logger.error("Agent stopped: %s", exc)
+                    print(f"\n🤖 Agent: {exc}")
+        except KeyboardInterrupt:
+            self.logger.info("Agent session interrupted by user.")
+            print("\n🤖 Agent: Interrupted. Goodbye.")
 
     def _process_stream(self, history_messages):
         """Stream the model's response and tool calls."""
@@ -152,7 +163,11 @@ class SimpleAIAgent:
 def main():
     load_dotenv()
     debug_enabled = configure_logging()
-    SimpleAIAgent(debug_enabled=debug_enabled).run()
+    try:
+        SimpleAIAgent(debug_enabled=debug_enabled).run()
+    except KeyError as exc:
+        logging.error("Missing required environment variable: %s", exc.args[0])
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

@@ -77,20 +77,36 @@ class AgentTools:
             try:
                 # Decode the model arguments and invoke the matching tool method.
                 tool_args = json.loads(tool_call.function.arguments)
+                if not isinstance(tool_args, dict):
+                    raise TypeError("Tool arguments must be a JSON object.")
+            except (json.JSONDecodeError, TypeError) as exc:
+                self.logger.warning(
+                    f"Invalid arguments for tool: name={tool_name} error={exc}"
+                )
+                tool_content = f"Tool {tool_name!r} received invalid arguments."
+            else:
                 self.logger.info(
                     f"Executing tool: name={tool_name} arguments={tool_args!r}"
                 )
-                tool_result = tool_function(**tool_args)
-                tool_content = str(tool_result)
-                self.logger.info(
-                    f"Tool completed: name={tool_name} result={tool_content!r}"
-                )
-            except Exception:
-                self.logger.exception(
-                    f"Tool failed: name={tool_name} "
-                    f"arguments={tool_call.function.arguments}"
-                )
-                raise
+                try:
+                    tool_result = tool_function(**tool_args)
+                except requests.RequestException as exc:
+                    self.logger.warning(
+                        f"Tool request failed: name={tool_name} error={exc}"
+                    )
+                    tool_content = (
+                        f"Tool {tool_name!r} could not reach its external service."
+                    )
+                except TypeError as exc:
+                    self.logger.warning(
+                        f"Tool invocation failed: name={tool_name} error={exc}"
+                    )
+                    tool_content = f"Tool {tool_name!r} received invalid arguments."
+                else:
+                    tool_content = str(tool_result)
+                    self.logger.info(
+                        f"Tool completed: name={tool_name} result={tool_content!r}"
+                    )
 
         return {
             "role": "tool",

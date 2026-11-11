@@ -120,11 +120,25 @@ class AgentToolsTests(unittest.TestCase):
         self.assertEqual(result["role"], "tool")
         self.assertIn("not registered", result["content"])
 
-    def test_execute_tool_call_reraises_invalid_json(self):
-        with self.assertRaises(ValueError):
-            self.tools.execute_tool_call(
-                make_tool_call("get_current_date_time", "not-json")
-            )
+    def test_execute_tool_call_returns_error_for_invalid_json(self):
+        result = self.tools.execute_tool_call(
+            make_tool_call("get_current_date_time", "not-json")
+        )
+
+        self.assertEqual(result["role"], "tool")
+        self.assertIn("invalid arguments", result["content"])
+
+    def test_execute_tool_call_returns_error_for_request_failure(self):
+        self.tools.functions["get_current_weather"] = Mock(
+            side_effect=requests.RequestException("offline")
+        )
+
+        result = self.tools.execute_tool_call(
+            make_tool_call("get_current_weather", '{"city": "Paris"}')
+        )
+
+        self.assertEqual(result["role"], "tool")
+        self.assertIn("external service", result["content"])
 
 
 class AgentTests(unittest.TestCase):
@@ -165,7 +179,7 @@ class AgentTests(unittest.TestCase):
 
         self.assertEqual(result, {"role": "assistant", "content": "Hello"})
         self.assertIs(agent.messages[-1], result)
-        self.assertEqual(output.getvalue(), "🤖 Agent: Hello\nTool calls: []\n")
+        self.assertEqual(output.getvalue(), "🤖 Agent: Hello\n")
 
     def test_response_executes_tool_then_requests_final_message(self):
         first_tool_chunk = SimpleNamespace(
@@ -269,6 +283,38 @@ class AgentTests(unittest.TestCase):
 
         self.assertEqual(len(agent.messages), 1)
 
+    def test_run_handles_keyboard_interrupt_during_response(self):
+        agent = self.make_agent(
+            SimpleNamespace(
+                chat=SimpleNamespace(
+                    completions=SimpleNamespace(
+                        create=Mock(side_effect=KeyboardInterrupt)
+                    )
+                )
+            )
+        )
+        output = StringIO()
+
+        with redirect_stdout(output), patch("builtins.input", side_effect=["Hi"]):
+            agent.run()
+
+        self.assertIn("Interrupted. Goodbye.", output.getvalue())
+
+    def test_run_logs_runtime_error_and_continues(self):
+        agent = self.make_agent(Mock())
+        output = StringIO()
+
+        with redirect_stdout(output), patch(
+            "builtins.input", side_effect=["First", "Second", "exit"]
+        ), patch.object(
+            agent,
+            "_get_agent_response",
+            side_effect=[RuntimeError("turn limit"), {"content": "Done"}],
+        ):
+            agent.run()
+
+        self.assertIn("turn limit", output.getvalue())
+
     def test_run_prints_streamed_response_only_once(self):
         client = SimpleNamespace(
             chat=SimpleNamespace(
@@ -289,7 +335,7 @@ class AgentTests(unittest.TestCase):
         ):
             agent.run()
 
-        self.assertEqual(output.getvalue(), "🤖 Agent: Hello\nTool calls: []\n")
+        self.assertEqual(output.getvalue(), "🤖 Agent: Hello\n")
 
 
 class LoggingTests(unittest.TestCase):
